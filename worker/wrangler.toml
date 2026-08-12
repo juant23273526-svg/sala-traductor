@@ -1,0 +1,15 @@
+name = "sala-traductor-room-worker"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+# Durable Object que sostiene el estado en memoria de cada Live Room
+# (conexiones WebSocket de host/guest) y retransmite mensajes entre ellas.
+# Sin base de datos, sin persistencia: la sala desaparece cuando ambos
+# participantes se desconectan.
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "TranslationRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TranslationRoom"]
