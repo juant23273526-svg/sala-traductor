@@ -1,7 +1,7 @@
 // Worker independiente que hospeda el Durable Object de las Live Rooms.
 // Se despliega aparte del frontend (Vite/PWA) con `wrangler deploy`; el
 // cliente (src/services/RoomWebSocketService.ts) se conecta a su URL
-// publica via VITE_ROOM_WORKER_URL.
+// publica via VITE_WS_WORKER_URL.
 export interface Env {
   ROOMS: DurableObjectNamespace;
 }
@@ -32,9 +32,9 @@ interface Session {
 
 type IncomingMessage =
   | { type: 'join'; payload: { roomCode?: unknown; role?: unknown; language: string } }
-  | { type: 'audio_chunk' | 'text_delta' | 'translation'; payload: unknown };
+  | { type: 'text_delta' | 'translation'; payload: unknown };
 
-const KNOWN_TYPES = new Set(['join', 'audio_chunk', 'text_delta', 'translation']);
+const KNOWN_TYPES = new Set(['join', 'text_delta', 'translation']);
 
 function parseIncoming(data: string): IncomingMessage | null {
   let value: unknown;
@@ -59,10 +59,11 @@ function parseIncoming(data: string): IncomingMessage | null {
 /**
  * Estado en memoria de una Live Room: mantiene las conexiones WebSocket de
  * los participantes y retransmite (relay) los mensajes entre ellos. Es un
- * relay puro — no transcribe ni traduce; `audio_chunk`/`text_delta`/
- * `translation` se reenvian tal cual para que un pipeline externo (STT/MT/
- * TTS) los consuma. Cuando todas las conexiones se cierran, la instancia
- * queda vacia y Cloudflare la recicla: cero persistencia, cero registros.
+ * relay puro — la traduccion real (STT/MT/TTS) ocurre fuera del WebSocket,
+ * via HTTP POST al motor de traduccion; este Durable Object solo reenvia
+ * su resultado (`translation`) al otro participante. Cuando todas las
+ * conexiones se cierran, la instancia queda vacia y Cloudflare la recicla:
+ * cero persistencia, cero registros.
  */
 export class TranslationRoom implements DurableObject {
   private sessions = new Map<WebSocket, Session>();
@@ -117,8 +118,8 @@ export class TranslationRoom implements DurableObject {
       return;
     }
 
-    // audio_chunk / text_delta / translation: se retransmiten tal cual a
-    // los demas participantes de la sala.
+    // text_delta / translation: se retransmiten tal cual a los demas
+    // participantes de la sala.
     this.relay(data, sender);
   }
 

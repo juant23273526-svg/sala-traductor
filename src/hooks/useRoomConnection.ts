@@ -45,6 +45,13 @@ export function useRoomConnection({ roomCode, role, language }: UseRoomConnectio
   }, [roomCode, role, language]);
 
   const sendMessage = useCallback((message: RoomMessage) => {
+    // El Durable Object retransmite a los demas participantes pero no al
+    // propio emisor: se refleja localmente aqui para que el hablante vea
+    // (y, via el efecto de reproduccion en RoomScreen, escuche) su propio
+    // mensaje sin esperar un round-trip por el WebSocket.
+    if (message.type === 'text_delta' || message.type === 'translation') {
+      setEntries((prev) => [...prev, message]);
+    }
     serviceRef.current?.send(message);
   }, []);
 

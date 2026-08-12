@@ -9,14 +9,6 @@ export interface JoinPayload {
   language: string;
 }
 
-export interface AudioChunkPayload {
-  seq: number;
-  /** PCM16 mono, codificado en base64. */
-  data: string;
-  sampleRate: number;
-  final: boolean;
-}
-
 export interface TextDeltaPayload {
   speaker: Speaker;
   text: string;
@@ -30,6 +22,9 @@ export interface TranslationPayload {
   translatedText: string;
   originalLanguage: string;
   translatedLanguage: string;
+  /** Audio TTS en base64, relayado tal cual por el Durable Object hacia el otro participante. */
+  audioBase64: string | null;
+  mimeType: string | null;
   createdAt: string;
 }
 
@@ -43,14 +38,13 @@ export interface PresencePayload {
 }
 
 /**
- * Protocolo de mensajeria de la Live Room. `audio_chunk`/`text_delta`
- * son pensados para ser producidos/consumidos por un pipeline externo de
- * STT/MT/TTS (fuera del alcance de este cliente): el Durable Object solo
- * los retransmite, no los procesa.
+ * Protocolo de mensajeria de la Live Room. El Durable Object retransmite
+ * `text_delta`/`translation` tal cual entre participantes — la traduccion
+ * en si ocurre fuera del WebSocket, via HTTP POST a VITE_API_TRANSLATE_URL
+ * (ver src/services/translateApi.ts), y su resultado se reenvia por aqui.
  */
 export type RoomMessage =
   | { type: 'join'; payload: JoinPayload }
-  | { type: 'audio_chunk'; payload: AudioChunkPayload }
   | { type: 'text_delta'; payload: TextDeltaPayload }
   | { type: 'translation'; payload: TranslationPayload }
   | { type: 'presence'; payload: PresencePayload };

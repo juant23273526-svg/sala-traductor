@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Languages, Plus, LogIn } from 'lucide-react';
 import { generateRoomCode, isValidRoomCode } from '@/utils/roomCode';
+import { unlockAudioPlayback } from '@/utils/audioUnlock';
 import type { RoomRole } from '@/types/room';
 
 interface WelcomeScreenProps {
@@ -12,6 +13,7 @@ export function WelcomeScreen({ onEnterRoom }: WelcomeScreenProps) {
   const [joinError, setJoinError] = useState<string | null>(null);
 
   const handleCreateRoom = () => {
+    unlockAudioPlayback();
     onEnterRoom(generateRoomCode(), 'host');
   };
 
@@ -21,6 +23,7 @@ export function WelcomeScreen({ onEnterRoom }: WelcomeScreenProps) {
       return;
     }
     setJoinError(null);
+    unlockAudioPlayback();
     onEnterRoom(joinCode, 'guest');
   };
 

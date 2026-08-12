@@ -1,24 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { encodePCM16ToBase64, mergeFloat32Arrays } from '@/utils/audioEncoding';
 
-export interface AudioChunkEvent {
-  seq: number;
-  data: string;
-  sampleRate: number;
-}
+// Orden de preferencia de mimeType para MediaRecorder. Safari/iOS no soporta
+// audio/webm; se elige el primero soportado en runtime.
+const MIME_TYPE_CANDIDATES = [
+  'audio/webm;codecs=opus',
+  'audio/webm',
+  'audio/mp4;codecs=mp4a.40.2',
+  'audio/mp4',
+  'audio/aac',
+  'audio/mpeg',
+];
 
-export interface UseAudioCaptureOptions {
-  onChunk?: (chunk: AudioChunkEvent) => void;
-  chunkIntervalMs?: number;
+function pickSupportedMimeType(): string | undefined {
+  if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
+    return undefined;
+  }
+  return MIME_TYPE_CANDIDATES.find((type) => MediaRecorder.isTypeSupported(type));
 }
 
 /**
- * Captura microfono via Web Audio API: expone volumen en vivo (para el
- * WaveformVisualizer) y trocea el audio capturado en chunks PCM16/base64
- * a intervalos regulares (para el mensaje `audio_chunk` del WS). No hace
- * transcripcion ni traduccion — solo transporte de audio crudo.
+ * Captura microfono: expone volumen en vivo (para el WaveformVisualizer,
+ * via AnalyserNode) y graba un Blob completo por intervencion (via
+ * MediaRecorder), devuelto al llamar a `stop()` para enviarlo al motor
+ * de traduccion.
  */
-export function useAudioCapture({ onChunk, chunkIntervalMs = 250 }: UseAudioCaptureOptions = {}) {
+export function useAudioCapture() {
   const [volume, setVolume] = useState(0);
   const [isCapturing, setIsCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -26,25 +32,15 @@ export function useAudioCapture({ onChunk, chunkIntervalMs = 250 }: UseAudioCapt
   const audioContextRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
   const frameRef = useRef(0);
-  const seqRef = useRef(0);
-  const pcmBufferRef = useRef<Float32Array[]>([]);
-  const chunkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const onChunkRef = useRef(onChunk);
-  onChunkRef.current = onChunk;
 
-  const stop = useCallback(() => {
-    if (chunkTimerRef.current !== null) {
-      clearInterval(chunkTimerRef.current);
-      chunkTimerRef.current = null;
-    }
+  const teardown = useCallback(() => {
     if (frameRef.current !== 0) {
       cancelAnimationFrame(frameRef.current);
       frameRef.current = 0;
     }
-    processorRef.current?.disconnect();
-    processorRef.current = null;
     analyserRef.current?.disconnect();
     analyserRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -53,8 +49,7 @@ export function useAudioCapture({ onChunk, chunkIntervalMs = 250 }: UseAudioCapt
       audioContextRef.current.close().catch(() => {});
       audioContextRef.current = null;
     }
-    pcmBufferRef.current = [];
-    seqRef.current = 0;
+    mediaRecorderRef.current = null;
     setVolume(0);
     setIsCapturing(false);
   }, []);
@@ -74,21 +69,6 @@ export function useAudioCapture({ onChunk, chunkIntervalMs = 250 }: UseAudioCapt
       analyserRef.current = analyser;
       source.connect(analyser);
 
-      // ScriptProcessorNode necesita estar conectado a un destino para
-      // disparar onaudioprocess en algunos navegadores; se enruta a traves
-      // de una ganancia en 0 para no reproducir el propio microfono.
-      const processor = audioContext.createScriptProcessor(4096, 1, 1);
-      processorRef.current = processor;
-      const silentGain = audioContext.createGain();
-      silentGain.gain.value = 0;
-      source.connect(processor);
-      processor.connect(silentGain);
-      silentGain.connect(audioContext.destination);
-
-      processor.onaudioprocess = (event) => {
-        pcmBufferRef.current.push(new Float32Array(event.inputBuffer.getChannelData(0)));
-      };
-
       const timeDomainData = new Uint8Array(analyser.frequencyBinCount);
       const tick = () => {
         analyser.getByteTimeDomainData(timeDomainData);
@@ -103,26 +83,42 @@ export function useAudioCapture({ onChunk, chunkIntervalMs = 250 }: UseAudioCapt
       };
       frameRef.current = requestAnimationFrame(tick);
 
-      chunkTimerRef.current = setInterval(() => {
-        if (pcmBufferRef.current.length === 0) return;
-        const merged = mergeFloat32Arrays(pcmBufferRef.current);
-        pcmBufferRef.current = [];
-        seqRef.current += 1;
-        onChunkRef.current?.({
-          seq: seqRef.current,
-          data: encodePCM16ToBase64(merged),
-          sampleRate: audioContext.sampleRate,
-        });
-      }, chunkIntervalMs);
+      recordedChunksRef.current = [];
+      const mimeType = pickSupportedMimeType();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) recordedChunksRef.current.push(event.data);
+      };
+      recorder.start(250);
+      mediaRecorderRef.current = recorder;
 
       setIsCapturing(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'No se pudo acceder al microfono');
       setIsCapturing(false);
     }
-  }, [chunkIntervalMs]);
+  }, []);
 
-  useEffect(() => stop, [stop]);
+  /** Detiene la captura y resuelve con el Blob grabado (o null si no hubo audio). */
+  const stop = useCallback((): Promise<Blob | null> => {
+    return new Promise((resolve) => {
+      const recorder = mediaRecorderRef.current;
+      if (!recorder || recorder.state === 'inactive') {
+        teardown();
+        resolve(null);
+        return;
+      }
+      recorder.onstop = () => {
+        const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType });
+        recordedChunksRef.current = [];
+        teardown();
+        resolve(blob.size > 0 ? blob : null);
+      };
+      recorder.stop();
+    });
+  }, [teardown]);
+
+  useEffect(() => () => void stop(), [stop]);
 
   return { start, stop, isCapturing, volume, error };
 }

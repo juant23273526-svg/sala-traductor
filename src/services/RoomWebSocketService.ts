@@ -4,7 +4,7 @@ export interface RoomWebSocketConfig {
   roomCode: string;
   role: RoomRole;
   language: string;
-  /** Override para pruebas/desarrollo local; por defecto se deriva de VITE_ROOM_WORKER_URL o del host actual. */
+  /** Override para pruebas/desarrollo local; por defecto se deriva de VITE_WS_WORKER_URL o del host actual. */
   wsUrl?: string;
 }
 
@@ -148,7 +148,7 @@ export class RoomWebSocketService {
       return url.toString();
     }
 
-    const workerBase = import.meta.env.VITE_ROOM_WORKER_URL;
+    const workerBase = import.meta.env.VITE_WS_WORKER_URL;
     const origin = workerBase
       ? workerBase.replace(/^http/, 'ws')
       : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
